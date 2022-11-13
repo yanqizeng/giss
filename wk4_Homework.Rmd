@@ -43,7 +43,8 @@ GenderIne<- read.csv(here::here("prac4_Data","HDR21-22_Composite_indices_complet
 
 # Reand in world countries shapfile
 ```{r}
-WorldData <- st_read(here("prac4_Data","World_Countries__Generalized_.shp"))
+# WorldData <- st_read(here("prac4_Data","World_Countries__Generalized_.shp")) #wohoo this is my local data source, never mind
+WorldData <- st_read(here("prac4_Data","World_Countries_(Generalized).geojson"))
 ```
 
 # Select necessary data
