@@ -1,0 +1,56 @@
+---
+title: "homework"
+output: html_document
+date: "2022-10-06"
+---
+```{r}
+
+```
+
+
+```{r}
+library(sf)
+library(tidyverse)
+
+shape <- st_read("statsnzterritorial-authority-2018-generalised-SHP/territorial-authority-2018-generalised.shp")
+
+employed_2018 <- read_csv("stats_edited.csv")
+
+# added test to last row to make character for example
+Datatypelist <- employed_2018 %>% 
+  summarise_all(class)
+Datatypelist
+
+#this was for the example to convert the character to numeric
+#employed_2018_2 <- employed_2018 %>%
+#  mutate(code=(as.numeric(Area_Code)))
+
+Datatypelist2 <- employed_2018_2 %>% 
+  summarise_all(class)
+Datatypelist
+
+summary(shape)
+
+shape %>%
+  st_geometry()%>%
+  plot()
+```
+```{r}
+shape2 <- shape%>%
+  merge(.,
+        employed_2018,
+        by.x="TA2018_V1_", 
+        by.y="Area_Code")
+```
+
+```{r}
+library(tmap)
+tmap_mode("plot")
+# change the fill to your column name if different
+my_map<-shape2 %>%
+  qtm(.,fill = "Paid employee")
+
+my_map
+```
+
+
