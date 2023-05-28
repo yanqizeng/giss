@@ -1,0 +1,324 @@
+---
+title: "Name: Yanqi Zeng"
+author: 
+- |
+    | Student number: 21093408
+date: "`r format(Sys.time(), '%X, %d %B, %Y')`"
+output: html_document
+---
+
+# Originality declaration
+
+I, [**Yanqi Zeng**], confirm that the work presented in this assessment is my own. Where information has been derived from other sources, I confirm that this has been indicated in the work.
+
+date: `r format(Sys.time(), '%d %B, %Y')`
+
+# Response
+
+## Project Scope
+
+### Project Research Background
+
+In New York State, landlords have the right to evict tenants who violate their leases. I was commissioned to conduct an analysis of eviction data for the year 2020. This includes exploring the spatial patterns of commercial evictions and providing appropriate recommendations.
+
+### Research Question
+
+Are commercial evictions in 2020 for New York spatially random or do they exhibit clustering？
+
+### Data
+
+-   Data list: New York City community districts, list of evictions.
+-   Data type: Character, Date, Float, Integer, String
+-   Variables of interest: 2022
+-   Attribute table: Executed date, Residential Commercial.
+-   Coordinate reference system: WGS84, NAD83.
+-   Source: NYC Open Data.
+-   Data collectors: NYC Open Data's Department of Investigation.
+-   Collection methodology: Scraping data using scripts.
+-   Any missing data: Null, NaN etc.
+
+### Limitations
+
+-   Data: On the one hand, the dataset itself is not clean, for example, there are invalid data such as NaNs and Nulls. On the other hand, the dataset has not been evaluated or verified for validity and accuracy.
+
+
+### Workflow
+
+First, read the New York City community districts and list of evictions. second, wrangle the large dataset, keeping only the parts needed for the analysis. Third, simply plot the data to check that it is correct. Fourthly, use Ripley K and DBSCAN for the analysis. Fifthly, map the data in a more aesthetically pleasing and advanced way.
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tmap)
+library(rgdal)
+library(broom)
+library(mapview)
+library(crosstalk)
+library(sf)
+library(sp)
+library(spData)
+library(spdep)
+library(carData)
+library(car)
+library(fs)
+library(janitor)
+library(spatstat)
+library(here)
+library(RColorBrewer)
+library(tmaptools)
+
+
+```
+
+## Setting Up My Data
+
+### Data Loading
+
+Read in the .csv file from my project folder and note the NA value.
+
+EXPLAIN - Get New York evictions data.
+
+```{r Read in data}
+EvictionsPoints <- read_csv("Data/Question_01/Evictions.csv", na=" ")
+```
+
+Use the st_read() function to read in the .shp file from my project folder.
+
+EXPLAIN - Get New York City community districts shape file.
+
+```{r Read in data}
+CommunityAreas <- st_read("Data/Question_01/Community Districts/geo_export_5021f606-a0c4-43a2-8a0a-e2bd175fd3b0.shp")
+```
+
+Use the print() function to check the coordinate reference system of sf or sp object.
+
+EXPLAIN - Knowing the coordinate reference system of the sf or sp object will help in the next analysis. For example, keeping all coordinate reference systems consistent to avoid join failures.
+
+```{r Print}
+print(CommunityAreas)
+```
+
+Checking the variable type.
+
+EXPLAIN - The na argument was added to the code above, so columns like postcode, longitude, dimension etc. should be numeric, not character. Check to ensure that the variable type is correct.
+
+```{r Data type list}
+Datatypelist <- EvictionsPoints %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist
+```
+
+### Data Wrangling
+
+First, check the coordinates of the csv on the site - <https://www.latlong.net/>. Secondly, filter the csv by Longitude\<0 and Latitude\>0. Finally, convert csv to sf objects the map based on crs = 4326.
+
+EXPLAIN - The purpose of this step is to convert the csv to points for later spatial analysis. First make sure they are in WGS84, the coordinate reference system (CRS) used for 2D is 4326, then filter the csv invalid data by setting conditions, this ensures that the csv is converted effectively.
+
+```{r Filter data}
+FilterPoints <- EvictionsPoints%>%
+  filter(Longitude<0 & Latitude>0)%>%
+
+  st_as_sf(., coords = c("Longitude", "Latitude"), 
+                   crs = 4326)
+
+```
+
+Summarize the features of points.
+
+EXPLAIN - Help us understand the filtered dataset features.
+
+OUTPUT - 64,653 features now from 71,522 in the original dataset.
+
+```{r Symmary}
+summary(FilterPoints)
+```
+
+Plot the evictions points in the city.
+
+EXPLAIN - First, plot the data to check that other countries do not have points, and that the longitude and latitude are correct. Second, have a general understanding of the distribution of points.
+
+```{r Plot}
+tmap_mode("plot")
+tm_shape(CommunityAreas) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(FilterPoints) +
+  tm_dots(col = "blue")  # Set the colour of the points
+```
+
+Check the evictions points are all within the community areas.
+
+EXPLAIN - Points outside the region can cause problems in the analysis that follows. When checking the data, if there are points that are not in the region, the problem can be dealt with by spatial subsetting, spatial clipping, etc.
+
+OUTPUT - Still have 64,653. So all were intersecting the boundary.
+
+```{r CRS}
+CommunityAreas <- CommunityAreas%>%
+  st_transform(., 4326)   # Set the coordinate reference system 
+
+PointsSub <- FilterPoints[CommunityAreas,]
+
+summary(PointsSub)
+
+```
+
+First use string testing to find the 2020 data in the executed_date column, based on this, only the 2020 data related to commercial is retained.
+
+EXPLAIN - Step-by-step processing of large data sets based on research questions and null hypotheses. Only the data relevant to the research question is retained, which facilitates the spatial analysis that follows.
+
+OUTPUT - This has reduced it to 250 points.
+
+```{r Filter}
+PointsSub_2020<-PointsSub%>%
+  clean_names()%>%
+  # select 2019 only
+  filter(str_detect(executed_date, "2020"))%>%
+  
+  # select commercial only
+  filter(residential_commercial=="Commercial")
+
+summary(PointsSub_2020)
+```
+
+Make a map
+
+EXPLAIN - Check the approximate distribution of data relevant to the research question.
+
+```{r Plot}
+tmap_mode("plot")
+tm_shape(CommunityAreas) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(PointsSub_2020) +
+  tm_dots(col = "blue")
+```
+
+## Data analysis
+
+First set the coordinate reference system (CRS) to 6538, then create a sp object and a ppp object.
+
+EXPLAIN - Keep the CRS consistent and in metres to make them compatible. The creation of sp objects and ppp objects is a pre-requisite for point pattern analysis. A ppp object has the coordinates of the points and the observation window (study region).
+
+```{r}
+CommunityAreas_Projected <- CommunityAreas %>%
+  st_transform(., 6538)
+
+PointsSub_2020_Projected <- PointsSub_2020 %>%
+  st_transform(., 6538)
+
+# set a window as the borough boundary
+window <- as.owin(CommunityAreas_Projected)
+plot(window)
+
+# create a sp object
+PointsSub_2020_Projected_sp<- PointsSub_2020_Projected %>%
+  as(., 'Spatial')
+# create a ppp object
+PointsSub_2020_Projected_sp.ppp <- ppp(x=PointsSub_2020_Projected_sp@coords[,1],
+                          y=PointsSub_2020_Projected_sp@coords[,2],
+                          window=window)
+```
+
+### Ripley k
+
+EXPLAIN - By using the function kest() to conduct the Ripley K test on the data, this can measures spatial clustering or dispersion over a range of distances.
+
+OUTPUT - As can be seen from the graph, at about 4200m the evictions points appears to cluster.
+
+```{r Ripley k}
+K <- PointsSub_2020_Projected_sp.ppp %>%
+  Kest(., correction="border") %>%
+  plot()
+```
+
+### DBSCAN
+
+EXPLAIN - DBSCAN is able to divide regions with sufficient density into clusters and at the same time find clusters of arbitrary shapes. In other words, DBSCAN shows us the spatial patterns of evictions points in a visual form.
+
+OUTPUT - There are four clusters in the area analysed.
+
+```{r DBSCAN}
+
+# first extract the points from the spatial points data frame
+Points_2020_todf <- PointsSub_2020_Projected_sp %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+# run the dbscan analysis
+# eps - radius of the search cluster
+# MinPts - minimum number of points
+Points_2020_todf_DBSCAN <- Points_2020_todf %>%
+  fpc::dbscan(.,eps = 2200, MinPts = 10)
+
+# kNNdistplot - find suitable eps value
+# k is no of nearest neighbours used, use min points
+Points_2020_todf%>%
+  dbscan::kNNdistplot(.,k=10)
+
+# plot the results
+plot(Points_2020_todf_DBSCAN, Points_2020_todf, main = "The DBSCAN Output", frame = F)
+plot(CommunityAreas_Projected$geometry, add=T)
+```
+
+Add the results of the analysis (cluster information) to the data frame of Points_2020_todf.
+
+```{r Add data}
+Points_2020_todf<- Points_2020_todf %>%
+  mutate(dbcluster=Points_2020_todf_DBSCAN$cluster)
+
+```
+
+Convert the data frame of Points_2020_todf to a sf object again.
+
+EXPLAIN - Preparing for the next mapping data.
+
+```{r Convert to sf}
+tosf <- Points_2020_todf%>%
+  st_as_sf(., coords = c("coords.x1", "coords.x2"), 
+                   crs = 6538)%>%
+  filter(dbcluster>0)
+
+```
+
+### Mapping the data
+
+EXPLAIN - Preliminary mapping of commercial evictions in New York in 2020.
+
+```{r ggplot}
+ggplot(data = CommunityAreas_Projected) +
+  # add the geometry of the community areas
+  geom_sf() +
+  # add the geometry of the points
+  # size - size of the points
+  # colour - colour of points
+  geom_sf(data = tosf, size = 1, colour=tosf$dbcluster, fill=tosf$dbcluster)
+
+```
+
+Mapping the data again
+
+EXPLAIN - Presenting analysis results in a more aesthetically pleasing way.
+
+```{r Mapping}
+#tmaptools::palette_explorer()
+# This is a very useful colour palette to help us achieve a more aesthetically pleasing map
+
+# Set the colours what you want
+colours<- get_brewer_pal("Set1", n = 10)
+
+tmap_mode("plot")
+tm_shape(CommunityAreas) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(tosf) +
+  tm_dots(col = "dbcluster",  palette = colours, style = "cat", size = 0.2)
+```
+
+
+## Interpretation
+
+In the analysis section, firstly Ripley k was used to explore whether the evictions are spatially random or cluster. The output of the Ripley k shows clusters of evictions at around 4200m. Therefore, I continued to use DBSCAN as a method for indepth exploration. In the DBSCAN analysis, I set the value of eps to 4200, but did not get the desired result. After several adjustments, eps = 2200 could reflect the spatial pattern of the evictions. As the map shows, the evictions show clustering in space.
+
+## Reflection
+
+
