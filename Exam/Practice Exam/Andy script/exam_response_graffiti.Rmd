@@ -1,0 +1,177 @@
+
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tmap)
+library(rgdal)
+library(broom)
+library(mapview)
+library(crosstalk)
+library(sf)
+library(sp)
+library(spdep)
+library(car)
+library(fs)
+library(janitor)
+library(here)
+```
+
+There is less code this week and no real context. As we have already been over various examples the idea is that you can now develop this into a full answer...the code i have provided is just to get you started - to a point where analysis is then possible from the raw data
+
+In this starter code i am aiming for a table that has density of graffiti points and variables that could explain the density, that i will get from census data. This question will involved a lot of wrangling.
+
+i have transformed the data straight into https://epsg.io/7131 - local CRS (in meters) for San Francisco 
+
+```{r}
+shape <- st_read("Data_graffiti/Census 2020_ Tracts for San Francisco/geo_export_b5c6b5d6-853b-4740-aa7d-7bc83ebe8e41.shp") %>%
+  st_transform(., crs=7131)
+
+graffiti <- read_csv("Data_graffiti/Graffiti.csv")
+
+graffiti2<-graffiti%>%
+  separate(., Point, c("latitude", "longitude"), sep = ",")
+  
+graffiti2$latitude<-parse_number(graffiti2$latitude) ## leading $ and grouping character , ignored
+graffiti2$longitude<-parse_number(graffiti2$longitude) ## leading $ and grouping character , ignored
+
+graffiti3<- graffiti2%>%
+  # if i don't remove NAs or 0 it may cause an error - remember last week
+  filter(latitude !=	0 )%>%
+  filter(longitude != 0)%>%
+  st_as_sf(., coords = c("longitude", "latitude"), 
+                   crs = 4326)
+
+graffiti4<- graffiti3%>%
+filter(str_detect(Closed, "2019"))%>%
+  #filter(str_detect(`Request Type`, "Building"))%>%
+  st_transform(., crs=7131)
+
+# spatial filter points within the san fran polygon (sf object)
+
+graffiti_within <- graffiti4[shape, ,op=st_intersects]
+
+tmap_mode("plot")
+tm_shape(shape) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(graffiti4) +
+  tm_dots(col = "blue")
+
+```
+
+
+At this stage we need to make density of points per spatial unit. I used to do that with a spatial join! However, reference the issue with this that was pointed out to me in 2022 by a student. 
+
+```{r, eval=FALSE}
+
+  points_sf_joined <- shape%>%
+    st_join(graffiti4)%>%
+    add_count(geoid10)%>%
+    janitor::clean_names()%>%
+    #calculate area
+    mutate(area=st_area(.))%>%
+    #then density of the points per ward
+    mutate(density=n/area)%>%
+    dplyr::select(geoid10 , neighborhood, density)%>%
+    group_by(geoid10) %>%         
+  summarise(geoid10 = first(geoid10),
+          neighborhood= first(neighborhood),
+          density= first(density))
+
+
+```
+
+So....we use st_intersects...
+
+
+```{r}
+
+points_sf_joined<-shape%>%
+  mutate(n = lengths(st_intersects(., graffiti4)))%>%
+  janitor::clean_names()%>%
+    #calculate area
+    mutate(area=st_area(.))%>%
+    #then density of the points per ward
+    mutate(density=n/area)
+
+```
+
+Now i will read in some census data...
+
+Another way to explore the census data is to use the explorer that lists some relevant data and the tables they are in...https://data.census.gov/profile/Census_Tract_308,_San_Francisco_County,_California?g=1400000US06075030800 
+
+Here i have downloaded the S2701 changes in health insurance data: https://data.census.gov/table?q=SELECTED+CHARACTERISTICS+OF+HEALTH+INSURANCE+COVERAGE+IN+THE+UNITED+STATES&t=Health&g=0400000US06$1400000&tid=ACSST5Y2020.S2701
+
+Read it in...health data ends in 819 folder
+
+```{r}
+census_health <- read_csv("Data_graffiti/ACSST5Y2020.S2701_2022-12-06T131819/ACSST5Y2020.S2701-Data.csv", skip=1)
+ 
+  
+ census_health2 <- census_health%>%
+  clean_names()
+ 
+```
+
+
+A very apparent problem is that there isn't a common column to join this data...
+
+Within this data there is a column called "estimate_percent_insured_civilian_noninstitutionalized_population" which might be useful...
+
+Select the column then join the data to our main sf file...remember i am trying to model the density of graffiti here...
+
+```{r}
+
+census_health3 <-census_health2 %>%
+  select(geography, geographic_area_name, estimate_percent_insured_civilian_noninstitutionalized_population)%>%
+  mutate(tract = str_sub(geography, start = 10, end=20))
+
+
+
+points_sf_joined_join_health_insur <- points_sf_joined %>%
+  left_join(., census_health3,
+            by=c("geoid" = "tract"))
+
+```
+
+The census tracts that are not joined have low or zero population as they are in the sea!
+
+What other data can we join here....we should read in all our data together and then join in, but now let's read in income and join...
+
+I personally find the best way to explore the columns is with the dollar. In the console type `census_income$` then the column names should appear.
+
+Now there is lots of data here, i frist tried to use median data estaimte, but a few more missing values appeared - they weren't an error of the join as i checked the original data and it contained a -. I've been unable to find what this means, i assume missing data. However, mean household income has all the values that i need (aside from the same values missing for the tracts in the sea we saw before.)
+
+After much searching i found this info, where the dash means insufficient sample observations: https://www.census.gov/data/developers/data-sets/acs-1year/notes-on-acs-estimate-and-annotation-values.html
+
+Note these are 5 year estimates: averages taken over 5 years - https://www.census.gov/programs-surveys/acs/guidance/estimates.html 
+
+Income ends in 746 folder
+
+```{r}
+census_income <- read_csv("Data_graffiti/ACSST5Y2020.S1901_2022-12-07T041746/ACSST5Y2020.S1901-Data.csv", skip=1)
+ 
+  
+census_income2 <- census_income%>%
+  clean_names()
+ 
+
+census_income3 <-census_income2 %>%
+  select(geography, geographic_area_name, estimate_households_mean_income_dollars, estimate_households_median_income_dollars, estimate_households_total)%>%
+  mutate(tract = str_sub(geography, start = 10, end=20))
+ 
+ 
+```
+
+Join again!
+
+```{r}
+points_sf_joined_join_health_insur_income <- points_sf_joined_join_health_insur %>%
+  left_join(., census_income3,
+            by=c("geoid" = "tract"))
+
+```
+
+Census guide: https://www.census.gov/programs-surveys/acs/library/handbooks/general.html
+
+Excellent book covering regression with US census data: https://walker-data.com/census-r/
+

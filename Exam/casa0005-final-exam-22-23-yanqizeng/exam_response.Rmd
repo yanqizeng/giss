@@ -1,0 +1,329 @@
+---
+title: "Name: Yanqi Zeng"
+author: 
+- |
+    | Student number: 21093408
+date: "16/12/22"
+output: html_document
+---
+
+# Originality declaration
+
+I, [**Yanqi Zeng**], confirm that the work presented in this assessment is my own. Where information has been derived from other sources, I confirm that this has been indicated in the work.
+
+date: [16/12/22]
+
+# Initial project scope
+
+## Project Research Background
+
+The distribution of schools has a significant impact on educational resources and student outcomes (Betts, 2000). And this social situation is gradually attracting attention. The city of Chicago wants to explore a spatial model for high schools.
+
+## Research Question and Null Hypothesis
+
+-   Research question: Are the high schools in 2020 for Chicago spatially random or do they exhibit clustering?
+
+
+## Data
+
+-   Data list: Chicago school point locations (2020), Census tracts for various years.
+-   Data type: Character, Date, Float, Integer, String etc.
+-   Variables of interest: High schools
+-   Attribute table
+    -   Chicago school point locations：The dataset contains 22 columns of data such as School_ID, Short_Name, Primary_Category.
+    -   Census tracts for various years：The dataset contains 13 columns of data such as STATEFP, COUNTYFP, TRACTCE.
+    
+-   Coordinate reference system: NAD83(EPSG:4269), WGS84.
+-   Source: Chicago Data Portal, Census Bureau.
+-   Data collectors: Chicago Public Schools, The North American Industry Classification System (NAICS).
+-   Collection methodology: Scraping data using scripts.
+-   Any missing data: Null, NaN etc.
+
+## Limitations
+
+-   Data: On the one hand, the dataset itself is not clean, for example, there are invalid data such as NaNs and Nulls. On the other hand, the dataset has not been evaluated or verified for validity and accuracy.
+
+## Workflow
+
+First, read the Chicago school point locations and Census tracts for various years. second, wrangle the large dataset, keeping only the parts needed for the analysis. Third, simply plot the data to check that it is correct. Fourthly, use Ripley K and DBSCAN for the analysis. Fifthly, map the data in a more aesthetically pleasing and advanced way.
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+library(tmap)
+library(rgdal)
+library(broom)
+library(mapview)
+library(crosstalk)
+library(sf)
+library(sp)
+library(spData)
+library(stringr)
+library(spdep)
+library(carData)
+library(car)
+library(fs)
+library(janitor)
+library(spatstat)
+library(here)
+library(RColorBrewer)
+library(tmaptools)
+library(readxl)
+
+```
+
+# Data Loading
+
+Use the st_read() function to read in the .shp file from my project folder.
+
+EXPLAIN - Get census tract shapefile (Illinois). And we can know that the CRS of the shapefile is NAD83.
+
+```{r Read in data}
+census_tract_shape <- st_read("Data/cb_2020_17_tract_500k/cb_2020_17_tract_500k.shp")
+
+```
+
+Read in the .csv file from my project folder.
+
+EXPLAIN - Get Chicago public schools.
+
+```{r Read in data}
+points <- read_csv("Data/Chicago_Public_Schools_-_School_Admissions_Information_SY2021.csv", na=" ")
+
+```
+
+Checking the variable type.
+
+EXPLAIN - Check to ensure that the variable type is correct.
+
+```{r Data type}
+Datatypelist <- points %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist
+
+```
+
+# Data Wrangling
+
+First, filter the csv by Longitude = 0 and Latitude = 0. Second, convert csv to sf objects the map based on crs = 4269.
+
+EXPLAIN - The purpose of this step is to convert the csv to sf objects for later spatial analysis. First filter the csv invalid data by setting conditions, this ensures that the csv is converted effectively. Then make sure they are in NAD83, the coordinate reference system (CRS) is 4269. You can find out more details here <https://epsg.io/4269>
+
+```{r convert csv to sf objects}
+points_schools<- points%>%
+  # filter the csv invalid data by setting conditions
+  filter(School_Latitude !=	0 )%>%
+  filter(School_Longitude != 0)%>%
+  # convert the csv to points
+  st_as_sf(., coords = c("School_Longitude", "School_Latitude"), 
+                   crs = 4269)
+
+```
+
+Check the evictions points are all within the community areas.
+
+EXPLAIN - Points outside the region can cause problems in the next analysis. When checking the data, if there are points that are not in the region, the problem can be dealt with by spatial subsetting, spatial clipping, etc.
+
+OUTPUT - The output is 681, which means 861 schools in Chicago in 2020.
+
+```{r CRS}
+census_tract_shape <- census_tract_shape%>%
+  st_transform(., 4269)   # Set the coordinate reference system 
+
+PointsSub_schools <- points_schools[census_tract_shape,]
+
+summary(PointsSub_schools)
+
+```
+
+Pick out Chicago high school data.
+
+EXPLAIN - Step-by-step processing of large data sets based on research questions. Only the data relevant to the research question is retained, which facilitates the spatial analysis that follows.
+
+OUTPUT - This has reduced it to 338, which means 338 high schools in Chicago in 2020.
+
+```{r Filter}
+PointsSub_high_schools<-PointsSub_schools%>%
+  # HS means high schools
+  # Find the keyword HS from the "Primary_Category" column
+  filter(Primary_Category=="HS")
+
+summary(PointsSub_high_schools)
+```
+
+Plot PointsSub school points
+
+```{r Plot}
+plot(PointsSub_high_schools)
+
+```
+
+Pull out Chicago .
+
+EXPLAIN - We currently have the entire Illinois shapefile, depending on the research question only the Chicago section is required. Therefore, we will look for the code that relates to Chicago (031) from the 'COUNTYFP' column data frame of our sf object
+
+```{r Filter}
+
+Chicago_census_tract <- census_tract_shape %>%
+  dplyr::filter(str_detect(COUNTYFP, "031"))%>%
+  st_transform(., 4269)
+
+qtm(Chicago_census_tract)
+
+```
+
+Make a map
+
+EXPLAIN - First, plot the data to check that other countries do not have points, and that the longitude and latitude are correct. Second, have a general understanding of the distribution of schools.
+
+```{r Plot}
+tmap_mode("plot")
+tm_shape(Chicago_census_tract) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(PointsSub_high_schools) +
+  tm_dots(col = "red")  # Set the colour of the points
+
+```
+
+# Data Analysis
+
+First set the coordinate reference system (CRS) to 3857, then create a sp object and a ppp object.
+
+EXPLAIN - Keep the CRS consistent and in metres to make them compatible (You can find out more details here <https://epsg.io/3857> ). The creation of sp objects and ppp objects is a pre-requisite for point pattern analysis. A ppp object has the coordinates of the points and the observation window (study region).
+
+```{r}
+Chicago_census_tract_Projected <- Chicago_census_tract %>%
+  st_transform(., 3857)
+
+PointsSub_HS_Projected <- PointsSub_high_schools %>%
+  st_transform(., 3857)
+
+# set a window as the borough boundary
+window <- as.owin(Chicago_census_tract_Projected)
+plot(window)
+
+# create a sp object
+PointsSub_HS_Projected_sp<- PointsSub_HS_Projected %>%
+  as(., 'Spatial')
+# create a ppp object
+PointsSub_HS_Projected_sp.ppp <- ppp(x=PointsSub_HS_Projected_sp@coords[,1],
+                          y=PointsSub_HS_Projected_sp@coords[,2],
+                          window=window)
+
+```
+
+## Ripley k
+
+EXPLAIN - By using the function kest() to conduct the Ripley K test on the data, it is possible to know whether the schools in Chicago are spatially random or show clustering.
+
+OUTPUT - As you can see from the graph, the K value is always above the Kpois(r) line in Red, which means that the school is clustered.
+
+```{r Ripley k}
+K <- PointsSub_HS_Projected_sp.ppp %>%
+  Kest(., correction="border") %>%
+  plot()
+
+```
+
+## DBSCAN
+
+EXPLAIN - DBSCAN is able to divide regions with sufficient density into clusters and at the same time find clusters of arbitrary shapes. In other words, DBSCAN shows us the spatial patterns of evictions points in a visual form.
+
+OUTPUT - As we can see, there are 8 clusters in the area analysed.
+
+```{r DBSCAN}
+
+Points_HS_todf <- PointsSub_HS_Projected_sp %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+# run the dbscan analysis
+# eps - radius of the search cluster
+# MinPts - minimum number of points
+Points_HS_todf_DBSCAN <- Points_HS_todf %>%
+  fpc::dbscan(.,eps = 1800, MinPts = 10)
+
+# kNNdistplot - find suitable eps value
+# k is no of nearest neighbours used, use min points
+Points_HS_todf%>%
+  dbscan::kNNdistplot(.,k=10)
+
+# plot the DBSCAN results
+plot(Points_HS_todf_DBSCAN, Points_HS_todf, main = "The DBSCAN Output", frame = F)
+plot(Chicago_census_tract_Projected$geometry, add=T)
+```
+
+Add the results of the analysis (cluster information) to the data frame of Points_school_todf.
+
+```{r Add data}
+Points_HS_todf<- Points_HS_todf %>%
+  mutate(dbcluster=Points_HS_todf_DBSCAN$cluster)
+
+```
+
+Convert the data frame of Points_school_todf to a sf object again.
+
+```{r Convert to sf}
+tosf <- Points_HS_todf%>%
+  st_as_sf(., coords = c("coords.x1", "coords.x2"), 
+                   crs = 3857)%>%
+  filter(dbcluster>0)
+
+```
+
+# Mapping the Data
+
+EXPLAIN - Preliminary mapping of commercial evictions in New York in 2020.
+
+```{r ggplot}
+ggplot(data = Chicago_census_tract_Projected) +
+  # add the geometry of the community areas
+  geom_sf() +
+  # add the geometry of the points
+  # size - size of the points
+  # colour - colour of points
+  geom_sf(data = tosf, size = 1, colour=tosf$dbcluster, fill=tosf$dbcluster)
+
+```
+
+## Mapping the data again
+
+Presenting analysis results in a more aesthetically pleasing way.
+
+```{r Mapping}
+#tmaptools::palette_explorer()
+# This is a very useful colour palette to help us achieve a more aesthetically pleasing map
+
+# Set the colours what you want
+colours<- get_brewer_pal("Set1", n = 10)
+
+# tm_credits() - setting the title
+# tm_compass() - setting the compass
+# tm_scale_bar() - Setting the scale
+tmap_mode("plot")
+tm_shape(Chicago_census_tract) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(tosf) +
+  tm_dots(col = "dbcluster",  palette = colours, style = "cat", size = 0.1)+
+  tm_credits("Space Patterns in Chicago High Schools", position=c(0.05,0.92))+tm_compass(north=0, position=c(0.1,0.05))+tm_scale_bar(position=c(0.2,0.04), text.size=0.6)
+
+```
+
+# Interpretation
+
+In the data analysis section, firstly Ripley's k was used to explore whether the evictions were spatially random or clustered. The output of Ripley's k showed that the black k line was above the red k line, which means that the high schools in Chicago in 2020 were spatially clustered. Next, I use DBSCAN as a method for in-depth exploration. In the DBSCAN analysis, I set the radius of the search clusters (eps) to 5000, but did not get the desired results. After a few adjustments, an eps value to 1800 could reflect the spatial pattern of Chicago High School. 
+
+As this graph of the analysis shows, the search cluster radius is 1800m and with a minimum point of 10, Chicago High School 2020 is spatially clustered and has 8 clusters.
+
+# Reflection
+
+The research used 2020 Chicago census data and 2020 Chicago school location data. The results of the research largely answer the research question, Chicago high schools are spatially clustered. It could inform policies such as balancing educational resources in the city of Chicago. However, there are certain limitations. First, the data are time-sensitive and the results of the analysis for 2020 cannot be fully applied to the current situation. Secondly, DBSCAN does not perform as well as other clustering algorithms when the clusters have different densities.
+
+We can also explore the importance of school distribution in relation to the outcomes of Chicago high school students.
+
+# Reference List
+
+-   Porter, Andrew C. "Research news and comment: School delivery standards." Educational Researcher 22.5 (1993): 24-30.
