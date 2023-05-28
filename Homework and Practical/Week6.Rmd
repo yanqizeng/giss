@@ -1,0 +1,438 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-11-28"
+---
+
+
+```{r}
+library(spatstat)
+library(here)
+library(sp)
+library(rgeos)
+library(maptools)
+library(tmap)
+library(sf)
+library(geojson)
+library(geojsonio)
+library(tmaptools)
+library(readr)
+
+```
+
+# 1.读取基本数据/信息
+```{r}
+# 读入London boroughs shp.数据
+
+LondonBoroughs <- st_read(here::here("prac6_data", "London_boroughs", "ESRI", "London_Borough_Excluding_MHW.shp"))
+```
+
+```{r}
+# 提取 London
+# 从对象“lad15cd”列数据框中查找与伦敦 (E09) 相关的地区代码位
+
+library(stringr)
+BoroughMap <- LondonBoroughs %>%
+  dplyr::filter(str_detect(GSS_CODE, "^E09"))%>%
+  st_transform(., 27700)
+
+qtm(BoroughMap)
+
+```
+
+```{r}
+# 总结地图信息
+summary(BoroughMap)
+```
+
+```{r}
+# 读入BluePlaques数据
+
+BluePlaques <- st_read(here::here("prac6_Data",
+                                  "open-plaques-london-2018-04-08.geojson")) %>%
+  st_transform(.,27700)
+```
+
+```{r}
+# 总结地图信息
+summary(BluePlaques)
+```
+
+```{r}
+# Blue Plaques带入London地图
+
+tmap_mode("plot")
+tm_shape(BoroughMap) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(BluePlaques) +
+  tm_dots(col = "blue")
+```
+
+# 2.清洗数据
+```{r}
+# 删掉London boroughs之外的Blue Plaque
+library(tidyverse)
+
+library(sf)
+BluePlaques <- distinct(BluePlaques)
+
+```
+
+# 3.使用以下几种方式挑选数据
+# 【空间子集化/拓扑关系】 【位置】 【空间裁剪】 【空间连接】
+```{r}
+# 3.1 使用不同的【拓扑关系】，对空间子集数据进行选择
+
+BluePlaquesSub <- BluePlaques[BoroughMap,]
+# 检查移除了不在区域内的点
+tmap_mode("plot")
+tm_shape(BoroughMap) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(BluePlaquesSub) +
+  tm_dots(col = "blue")
+```
+
+
+```{r}
+# 3.2 根据【位置】选择数据 类似于select by location
+# intersect_indices <-st_intersects(BoroughMap, BluePlaques)
+```
+
+
+```{r}
+# 3.3.1 使用【空间连接】，选择数据
+# 举例1 ：LB 和 OSM
+
+# 读入London Boroughs shp.数据
+Londonborough <- st_read(here::here("prac6_Data",
+                                    "London_boroughs", 
+                                    "ESRI", 
+                                    "London_Borough_Excluding_MHW.shp"))%>%
+  st_transform(., 27700)
+```
+
+```{r}
+# 读入OSM数据
+OSM <- st_read(here::here("prac5_Data",
+                          "greater-london-latest-free.shp", 
+                          "gis_osm_pois_a_free_1.shp")) %>%
+  st_transform(., 27700) %>%
+  #select hotels only
+  filter(fclass == 'hotel')
+```
+
+```{r}
+
+
+# OSM和Lb 空间连接
+join_example <-  st_join(OSM, Londonborough)
+
+nrow(join_example)
+
+```
+
+
+```{r}
+# 3.3.2 使用【空间连接】 选择数据
+# 举例2 ：Airbnb 和 Hotel
+
+
+# 读取Airbnb数据，并且加入到空间数据（spatial data)
+
+Airbnb <- read_csv("prac5_Data/listings.csv") %>%
+  st_as_sf(., coords = c("longitude", "latitude"), 
+                   crs = 4326) %>%
+    st_transform(., 27700)%>%
+    # 选择 available 365
+    filter(room_type == 'Entire home/apt' & availability_365 =='365')
+
+
+# 为数据的连接创建function
+# 替换 data1 data2为自己需要的数据
+# 没搞懂❓
+Joinfun <- function(data1, data2){
+
+output<- data1%>%
+  st_join(Londonborough,.) %>%
+  add_count(GSS_CODE, name="hotels_in_borough") 
+
+  return(output)
+}
+
+
+# 挑选在LB范围的Airbnb数据
+Airbnb <- Joinfun(Airbnb, Londonborough)
+
+
+# 从OSM挑选在LB范围的hotel数据
+Hotels <- Joinfun(OSM, Londonborough)
+
+
+# 计算伦敦每个自治区Hotel Airbnb数量
+Hotels <- Hotels %>%
+  group_by(., GSS_CODE, NAME)%>%
+  summarise(`Accomodation count` = unique(hotels_in_borough))
+
+Airbnb <- Airbnb %>%
+  group_by(., GSS_CODE, NAME)%>%
+  summarise(`Accomodation count` = unique(hotels_in_borough)
+
+```
+
+```{r}
+# Airbnb 和 Hotel 空间连接
+all_accomodation <- st_join(Hotels, Airbnb, join = st_equals)
+
+head(all_accomodation)
+
+```
+
+# 实践⭐  1
+# 小练习：对一个区进行分析
+```{r}
+# 1.根据属性 挑选一块区域
+Harrow <- BoroughMap %>%
+  filter(., NAME=="Harrow")
+
+# 检查一下选区
+tm_shape(Harrow) +
+  tm_polygons(col = NA, alpha = 0.5)
+```
+
+```{r}
+# 2.裁剪出区域内的Blue Plaque
+BluePlaquesSub <- BluePlaques[Harrow,]
+
+# 检查一下
+tmap_mode("plot")
+
+tm_shape(Harrow) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(BluePlaquesSub) +
+  tm_dots(col = "blue")
+```
+
+```{r}
+# 3.创建可以观察区域的窗口
+window <- as.owin(Harrow)
+plot(window)
+```
+
+```{r}
+# 4.由于spatstat特殊性，需要为点模式分析创建 sp object 和 ppp object
+
+#create a sp object
+BluePlaquesSub<- BluePlaquesSub %>%
+  as(., 'Spatial')
+#create a ppp object
+BluePlaquesSub.ppp <- ppp(x=BluePlaquesSub@coords[,1],
+                          y=BluePlaquesSub@coords[,2],
+                          window=window)
+
+
+
+```
+
+```{r}
+# 查看新生成的ppp
+BluePlaquesSub.ppp %>%
+  plot(.,pch=16,cex=0.5, 
+       main="Blue Plaques Harrow")
+```
+
+```{r}
+# 5.【点的核密度分析】【Kernel Density Estimation】
+
+# sigma=500 是内核的直径，单位为米。可以更改
+BluePlaquesSub.ppp %>%
+  density(., sigma=500) %>%
+  plot()
+```
+
+```{r}
+# 6.【样方分析】【Quadrat Analysis】
+
+# 生成网格计算每个格里的点数量，用于“完全空间随机性”
+
+plot(BluePlaquesSub.ppp,
+     pch=16,
+     cex=0.5, 
+     main="Blue Plaques in Harrow")
+
+BluePlaquesSub.ppp %>%
+  quadratcount(.,nx = 6, ny = 6)%>%
+    plot(., add=T, col="red")
+```
+
+```{r}
+# 7.“计算伦敦其他区域是否存在相同的空间模式”
+
+# 方式：以上点的分析结果和【泊松分布】比较
+# 一步步运行下面的步骤
+
+# 7.1 生成数据表
+Qcount <- BluePlaquesSub.ppp %>%
+  quadratcount(.,nx = 6, ny = 6) %>%
+  as.data.frame() %>%
+  dplyr::count(Var1=Freq)%>%
+  dplyr::rename(Freqquadratcount=n)
+
+# 7.2 查看数据表第一列
+Qcount %>% 
+  summarise_all(class)
+
+# 7.3 基于泊松分布计算期望概率的公式
+sums <- Qcount %>%
+  #calculate the total blue plaques (Var * Freq)
+  mutate(total = Var1 * Freqquadratcount) %>%
+  dplyr::summarise(across(everything(), sum))%>%
+  dplyr::select(-Var1) 
+
+lambda<- Qcount%>%
+  #calculate lambda
+  mutate(total = Var1 * Freqquadratcount)%>%
+  dplyr::summarise(across(everything(), sum)) %>%
+  mutate(lambda=total/Freqquadratcount) %>%
+  dplyr::select(lambda)%>%
+  pull(lambda)
+
+# 7.4 生成 实际的点和预期的点 的比较图
+QCountTable <- Qcount %>%
+  mutate(Pr=((lambda^Var1)*exp(-lambda))/factorial(Var1))%>%
+
+  mutate(Expected= (round(Pr * sums$Freqquadratcount, 0)))
+
+plot(c(1,5),c(0,14), type="n",
+xlab="Number of Blue Plaques (Red=Observed,Blue=Expected)", 
+     ylab="Frequency of Occurances")
+points(QCountTable$Freqquadratcount, 
+       col="Red", 
+       type="o", 
+       lwd=3)
+points(QCountTable$Expected, col="Blue", 
+       type="o", 
+       lwd=3)
+
+```
+
+```{r}
+# 7.5 用【样方分析】展示实际值、预期值、残差值
+
+teststats <- quadrat.test(BluePlaquesSub.ppp, nx = 6, ny = 6)
+
+plot(BluePlaquesSub.ppp,pch=16,cex=0.5, main="Blue Plaques in Harrow")
+plot(teststats, add=T, col = "red")
+
+# 左上：实际值  右上：预期值   底部：残差值
+
+```
+
+
+# 实践⭐  2
+# 小练习：基于密度的噪声应用空间聚类 DBSCAN
+# DBSCAN 是在物理空间中发现集群的技术
+# 对 区域Harrow 的蓝色斑块进行 DBSCAN 分析，看看是否存在任何集群
+
+```{r}
+library(raster)
+library(fpc)
+```
+
+```{r}
+# 1.检查Harrow空间多边形的坐标参考系
+st_geometry(BoroughMap)
+```
+
+```{r}
+# 2.用DBSCAN计算实际数据
+# 从数据中提取点
+BluePlaquesSubPoints <- BluePlaquesSub %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+# 运行DBSCAN
+# eps 算法搜索集群的半径  MinPts集群的最小点数
+db <- BluePlaquesSubPoints %>%
+  fpc::dbscan(.,eps = 700, MinPts = 4)
+
+# 分析结果图
+plot(db, BluePlaquesSubPoints, main = "DBSCAN Output", frame = F)
+plot(BoroughMap$geometry, add=T)
+```
+
+```{r}
+# 3.使用DBSCAN找到 核Knee 合适的eps值
+library(dbscan)
+BluePlaquesSubPoints%>%
+  dbscan::kNNdistplot(.,k=4)
+
+```
+
+```{r}
+# 4. 绘制DBSCAN的分析结果图
+library(ggplot2)
+
+db
+
+db$cluster
+
+# 4.1 信息添加到数据框中
+BluePlaquesSubPoints<- BluePlaquesSubPoints %>%
+  mutate(dbcluster=db$cluster)
+
+# 4.2 创建一些凸包多边形来环绕我们集群中的点
+chulls <- BluePlaquesSubPoints %>%
+  group_by(dbcluster) %>%
+  dplyr::mutate(hull = 1:n(),
+  hull = factor(hull, chull(coords.x1, coords.x2)))%>%
+  arrange(hull)
+
+# 4.3 删除0，因为0不是在集群中的点
+chulls <- chulls %>%
+  filter(dbcluster >=1)
+
+# 4.4 根据数据创建一个 ggplot2
+dbplot <- ggplot(data=BluePlaquesSubPoints, 
+                 aes(coords.x1,coords.x2, colour=dbcluster, fill=dbcluster)) 
+#add the points in
+dbplot <- dbplot + geom_point()
+#now the convex hulls
+dbplot <- dbplot + geom_polygon(data = chulls, 
+                                aes(coords.x1,coords.x2, group=dbcluster), 
+                                alpha = 0.5) 
+
+dbplot + theme_bw() + coord_equal()
+
+```
+
+```{r}
+# 4.5 为上面结果添加底图
+HarrowWGSbb <- Harrow %>%
+  st_transform(., 4326)%>%
+  st_bbox()
+
+# 4.6 将底图转换为英国国家网格
+library(OpenStreetMap)
+
+basemap <- OpenStreetMap::openmap(c(51.5549876,-0.4040502),c(51.6405356,-0.2671315),
+                         zoom=NULL,
+                         "stamen-toner")
+
+  # convert the basemap to British National Grid
+basemap_bng <- openproj(basemap, projection="+init=epsg:27700")
+
+
+# 4.7 绘制设计感的图
+autoplot.OpenStreetMap(basemap_bng)+ 
+  geom_point(data=BluePlaquesSubPoints, 
+             aes(coords.x1,coords.x2, 
+                 colour=dbcluster, 
+                 fill=dbcluster)) + 
+  geom_polygon(data = chulls, 
+               aes(coords.x1,coords.x2, 
+                   group=dbcluster,
+                   fill=dbcluster), 
+               alpha = 0.5)
+
+```
+

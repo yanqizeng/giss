@@ -1,0 +1,212 @@
+---
+title: "wk8"
+output: html_document
+date: "2022-12-07"
+---
+
+
+```{r}
+library(tidyverse)
+library(tmap)
+library(geojsonio)
+library(plotly)
+library(rgdal)
+library(broom)
+library(mapview)
+library(crosstalk)
+library(sf)
+library(sp)
+library(spdep)
+library(car)
+library(fs)
+library(janitor)
+library(broom)  #整理线性回归模型的输出
+library(tidypredict)  # 回归模型每个点的预测
+library(tidymodels)  # 假设检验方法之一tidymodels
+
+
+```
+
+# 1.读取数据
+```{r}
+# 1.从网站下载.zip数据，并且保存到指定文件夹
+
+download.file("https://data.london.gov.uk/download/statistical-gis-boundary-files-london/9ba8c833-6370-4b11-abdc-314aa020d5e0/statistical-gis-boundaries-london.zip", 
+              destfile="prac8_Data/statistical-gis-boundaries-london.zip")
+
+```
+
+```{r}
+# 解压.zip数据文件包
+library(fs)
+listfiles<-dir_info(here::here("prac8_Data")) %>%
+  dplyr::filter(str_detect(path, ".zip")) %>%
+  dplyr::select(path)%>%
+  pull()%>%
+  #print out the .gz file
+  print()%>%
+  as.character()%>%
+  utils::unzip(exdir=here::here("prac8_Data"))
+```
+
+```{r}
+# 逐层查看.zip内部
+# 读取.shp
+Londonwards<-fs::dir_info(here::here("prac8_Data", 
+                                 "statistical-gis-boundaries-london", 
+                                 "ESRI"))%>%
+  #$ means exact match
+  dplyr::filter(str_detect(path, 
+                           "London_Ward_CityMerged.shp$"))%>%
+  dplyr::select(path)%>%
+  dplyr::pull()%>%
+  #read in the file in
+  sf::st_read()
+```
+
+```{r}
+# 出图 检查数据
+qtm(Londonwards)
+```
+
+```{r}
+# 2. 读取用到的其他数据
+LondonWardProfiles <- read_csv("https://data.london.gov.uk/download/ward-profiles-and-atlas/772d2d64-e8c6-46cb-86f9-e52b4c7851bc/ward-profiles-excel-version.csv", 
+                               col_names = TRUE, 
+                               locale = locale(encoding = 'Latin1'))
+```
+
+```{r}
+# 检查是否正确地读入了所有列
+Datatypelist <- LondonWardProfiles %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist
+```
+
+# 2.清理数据
+```{r}
+# 从网站直接读取/下载数据
+# 注意
+# 应数字数据读取的字段，被误当作字符（文本）数据读取
+
+LondonWardProfiles <- read_csv("https://data.london.gov.uk/download/ward-profiles-and-atlas/772d2d64-e8c6-46cb-86f9-e52b4c7851bc/ward-profiles-excel-version.csv", 
+                               na = c("", "NA", "n/a"), 
+                               locale = locale(encoding = 'Latin1'), 
+                               col_names = TRUE)
+
+```
+
+```{r}
+# 检查是否正确地读入了所有列
+Datatypelist <- LondonWardProfiles %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist
+```
+
+# 3.合并数据  附加数据
+```{r}
+# 1.把已有的.csv和.shp根据公共ID合并在一起
+
+# merge数据
+LonWardProfiles <- Londonwards%>%
+  left_join(.,
+            LondonWardProfiles, 
+            by = c("GSS_CODE" = "New code"))
+
+# 映射因变量，以检查是否有效合并
+tmap_mode("plot")
+qtm(LonWardProfiles, 
+    fill = "Average GCSE capped point scores - 2014", 
+    borders = NULL,  
+    fill.palette = "Blues")
+```
+
+```{r}
+# 附加"点”数据
+#（ x 经度longitude, y 维度latitude）
+
+london_schools <- read_csv("https://data.london.gov.uk/download/london-schools-atlas/57046151-39a0-45d9-8dc0-27ea7fd02de8/all_schools_xy_2016.csv")
+
+# 创建点数据集
+lon_schools_sf <- st_as_sf(london_schools, 
+                           coords = c("x","y"), 
+                           crs = 4326)
+
+lond_sec_schools_sf <- lon_schools_sf %>%
+  filter(PHASE=="Secondary")
+
+tmap_mode("plot")
+qtm(lond_sec_schools_sf)
+
+```
+
+# 【分析影响 GCSE 考试成绩的因素——检验研究假设】
+# 4.回归模型
+```{r}
+# 1.绘制归回线的代码
+
+# 运行线性回归模型并将其输出存储在一个名为model1的对象中
+Regressiondata<- LonWardProfiles%>%
+  clean_names()%>%
+  dplyr::select(average_gcse_capped_point_scores_2014, 
+                unauthorised_absence_in_all_schools_percent_2013)
+
+# model
+model1 <- Regressiondata %>%
+  lm(average_gcse_capped_point_scores_2014 ~
+               unauthorised_absence_in_all_schools_percent_2013,
+     data=.)
+
+```
+
+```{r}
+# 2.显示输出的摘要
+summary(model1)
+
+# 理解结果： Estimate >> β0截距 = 371.471  β1=-41.237 
+# t value >> 值越大（正或负），特定自变量对因变量的相对影响就越大
+# Pr(>|t|) >> p值小于0.05 拒绝/接受假设
+# R-squared >> 值越大拟合程度越好
+```
+
+```{r}
+# 整理线性回归模型的输出
+tidy(model1)  # 前半部分
+```
+```{r}
+glance(model1) # 后半部分
+```
+
+```{r}
+# 预测每个点的GCSE值
+Regressiondata %>%
+  tidypredict_to_column(model1)
+```
+
+
+```{r}
+# 3.假设检验
+# 方法一：tidymodels
+
+# set the model
+lm_mod <- linear_reg()
+
+# fit the model
+lm_fit <- 
+  lm_mod %>% 
+  fit(average_gcse_capped_point_scores_2014 ~
+               unauthorised_absence_in_all_schools_percent_2013,
+     data=Regressiondata)
+
+# we cover tidy and glance in a minute...
+tidy(lm_fit)
+```
+

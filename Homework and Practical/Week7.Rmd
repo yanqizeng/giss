@@ -1,0 +1,368 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-12-05"
+---
+
+
+```{r}
+library(here)
+library(janitor)
+library(sf)
+library(tidyverse)
+library(tmap)
+library(spdep)
+
+```
+
+# 1.读取基本数据/信息
+```{r}
+# 读取shp数据
+
+LondonWards <- st_read(here::here("prac7_Data","statistical-gis-boundaries-london","ESRI","London_Ward.shp"))
+```
+
+```{r}
+LondonWardsMerged <- st_read(here::here("prac7_Data", 
+                                        "statistical-gis-boundaries-london", 
+                                        "ESRI",
+                                        "London_Ward_CityMerged.shp"))%>%
+  st_transform(.,27700) # 定义该数据的投影（地理编码）
+```
+
+```{r}
+# 读取csv数据，并修正投影
+
+WardData <- read_csv("https://data.london.gov.uk/download/ward-profiles-and-atlas/772d2d64-e8c6-46cb-86f9-e52b4c7851bc/ward-profiles-excel-version.csv",
+                    locale = locale(encoding = "latin1"),
+                     na = c("NA", "n/a")) %>% 
+  clean_names()
+
+# 定义/修正投影
+LondonWardsMerged <- LondonWardsMerged %>% 
+  left_join(WardData, 
+            by = c("GSS_CODE" = "new_code"))%>%
+  dplyr::distinct(GSS_CODE, .keep_all = T)%>%
+  dplyr::select(GSS_CODE, ward_name, average_gcse_capped_point_scores_2014)
+
+```
+
+```{r}
+# 查看数据的投影等信息
+st_crs(LondonWardsMerged)
+```
+
+```{r}
+# 读取BluePlaques 数据
+BluePlaques <- st_read(here::here("prac6_Data",
+                                  "open-plaques-london-2018-04-08.geojson")) %>%
+    st_transform(.,27700)
+```
+
+# 2.选择 + 清洗数据
+```{r}
+# 绘制 BluePlaques + London shp 的图
+tmap_mode("plot")
+tm_shape(LondonWardsMerged) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(BluePlaques) +
+  tm_dots(col = "blue")
+
+```
+
+```{r}
+# 清洗London之外的蓝点数据
+
+summary(BluePlaques) # 1.蓝点总计
+```
+
+```{r}
+BluePlaquesSub <- BluePlaques[LondonWardsMerged,] # 2.选择在London范围内的蓝点数据
+
+# 绘制 清洗后的图
+tm_shape(LondonWardsMerged) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(BluePlaquesSub) +
+  tm_dots(col = "blue")
+```
+
+# 3.【Data Manipulation】数据操作
+# 像QGIS一样，计算每个区的蓝点数量，并且递增排序（用渐变色）
+```{r}
+
+example<-st_intersects(LondonWardsMerged, BluePlaquesSub) 
+# st_intersects 为每个区计算蓝点数量
+
+example
+# 在结果中，6 有三个数值
+# 所以使用st_join来特别处理6
+```
+
+```{r}
+check_example <- LondonWardsMerged%>%
+  st_join(BluePlaquesSub)%>%
+  filter(ward_name=="Kingston upon Thames - Coombe Hill")
+
+# Kingston...Hill 是6的ID
+```
+
+```{r}
+# 也许是其中一步骤❓
+points_sf_joined <- LondonWardsMerged%>%
+  mutate(n = lengths(st_intersects(., BluePlaquesSub)))%>%
+  janitor::clean_names()%>%
+  #calculate area
+  mutate(area=st_area(.))%>%
+  #then density of the points per ward
+  mutate(density=n/area)%>%
+  #select density and some other variables 
+  dplyr::select(density, ward_name, gss_code, n, average_gcse_capped_point_scores_2014)
+```
+
+```{r}
+# 递增排序，绘制成图
+points_sf_joined<- points_sf_joined %>%                    
+  group_by(gss_code) %>%         
+  summarise(density = first(density),
+          wardname= first(ward_name),
+          plaquecount= first(n))
+
+# 图的格式/布局
+tm_shape(points_sf_joined) +
+    tm_polygons("density",
+        style="jenks",
+        palette="PuOr",
+        midpoint=NA,
+        popup.vars=c("wardname", "density"),
+        title="Blue Plaque Density")
+```
+
+# 4. 【Weight Matrix】权重矩阵
+# 用数字化的形式衡量地区之间的相互影响
+```{r}
+
+# 1.计算伦敦所有Wards的质心
+coordsW <- points_sf_joined%>%
+  st_centroid()%>%
+  st_geometry()
+  
+plot(coordsW,axes=TRUE)
+```
+
+```{r}
+# 2.为每个质心创建邻居列表
+LWard_nb <- points_sf_joined %>%
+  poly2nb(., queen=T)
+```
+
+```{r}
+# 查看邻居列表的信息
+summary(LWard_nb)
+# 结果：Average number of links: 5.888 “每个质心有5.888个邻居”
+```
+
+```{r}
+# 3.邻居列表绘制成图
+plot(LWard_nb, st_geometry(coordsW), col="red")  #质心和邻居之间连线
+plot(points_sf_joined$geometry, add=T) # Wards边框
+```
+
+```{r}
+# 4. 使用邻居列表创建权重矩阵
+
+Lward.lw <- LWard_nb %>%
+  nb2mat(., style="B")  # B是基本二进制编码（1/0）
+
+sum(Lward.lw)
+# 结果：二进制（1/0）求和表明有3680个邻居
+```
+
+```{r}
+# 5.标准化 权重矩阵
+# 例如，用1除以每一行邻居数的总和
+sum(Lward.lw[1,])
+
+```
+
+# 5. 【Autocorrelation】自相关
+```{r}
+# 1.自相关第一种方法： Moran's
+# Moran's 需要权重列表
+
+Lward.lw <- LWard_nb %>%  # 权重矩阵 转换为 权重列表
+  nb2listw(., style="C")
+```
+
+```{r}
+I_LWard_Global_Density <- points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  moran.test(., Lward.lw)
+
+I_LWard_Global_Density
+```
+
+```{r}
+# 2.自相关第二种方法： Geary’s C
+
+C_LWard_Global_Density <- 
+  points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  geary.test(., Lward.lw)
+
+C_LWard_Global_Density
+```
+
+```{r}
+# 3.自相关第三种方法： Getis Ord
+
+G_LWard_Global_Density <- 
+  points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  globalG.test(., Lward.lw)
+
+G_LWard_Global_Density
+```
+
+# Lcoal Moran's 和 Getis Ord 生成热点地图
+```{r}
+# 【Lcoal Moran's】
+# 使用localmoran 为每个Wards 生成 I值
+
+I_LWard_Local_count <- points_sf_joined %>%
+  pull(plaquecount) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw)%>%
+  as_tibble()
+
+I_LWard_Local_Density <- points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw)%>%
+  as_tibble()
+
+# 展示生成的 I值
+slice_head(I_LWard_Local_Density, n=5)
+```
+
+```{r}
+# 上一步生成的5列数据，复制回一些列❓
+points_sf_joined <- points_sf_joined %>%
+  mutate(plaque_count_I = as.numeric(I_LWard_Local_count$Ii))%>%
+  mutate(plaque_count_Iz =as.numeric(I_LWard_Local_count$Z.Ii))%>%
+  mutate(density_I =as.numeric(I_LWard_Local_Density$Ii))%>%
+  mutate(density_Iz =as.numeric(I_LWard_Local_Density$Z.Ii))
+```
+
+```{r}
+# 根据远离均值的数据点，手动设置中断
+breaks1<-c(-1000,-2.58,-1.96,-1.65,1.65,1.96,2.58,1000)
+
+```
+
+```{r}
+# 创建渐变的色板，最高值为红色
+library(RColorBrewer)
+MoranColours<- rev(brewer.pal(8, "RdGy"))
+```
+
+```{r}
+# 绘制交互地图
+tm_shape(points_sf_joined) +
+    tm_polygons("plaque_count_Iz",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, Blue Plaques in London")
+```
+
+```{r}
+# 【Local Getis Ord】
+
+Gi_LWard_Local_Density <- points_sf_joined %>%
+  pull(density) %>%
+  as.vector()%>%
+  localG(., Lward.lw)
+
+head(Gi_LWard_Local_Density)
+
+```
+
+```{r}
+# 调整多边形之间的差异
+points_sf_joined <- points_sf_joined %>%
+  mutate(density_G = as.numeric(Gi_LWard_Local_Density))
+```
+
+```{r}
+# 绘制交互地图
+library(RColorBrewer)
+
+GIColours<- rev(brewer.pal(8, "RdBu"))
+
+#now plot on an interactive map
+tm_shape(points_sf_joined) +
+    tm_polygons("density_G",
+        style="fixed",
+        breaks=breaks1,
+        palette=GIColours,
+        midpoint=NA,
+        title="Gi*, Blue Plaques in London")
+```
+
+# 6.使用其他变量（数据）生成热点图
+```{r}
+# 使用head查看数据文件中的其他变量
+# 此处，用GSCE变量
+slice_head(points_sf_joined, n=2)
+```
+
+```{r}
+# 【Lcoal Moran's】
+I_LWard_Local_GCSE <- LondonWardsMerged %>%
+  arrange(GSS_CODE)%>%
+  pull(average_gcse_capped_point_scores_2014) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw)%>%
+  as_tibble()
+
+points_sf_joined <- points_sf_joined %>%
+  arrange(gss_code)%>%
+  mutate(GCSE_LocIz = as.numeric(I_LWard_Local_GCSE$Z.Ii))
+
+# 绘制交互底图
+tm_shape(points_sf_joined) +
+    tm_polygons("GCSE_LocIz",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, GCSE Scores")
+```
+
+```{r}
+# 【Local Getis Ord】
+G_LWard_Local_GCSE <- LondonWardsMerged %>%
+  dplyr::arrange(GSS_CODE)%>%
+  dplyr::pull(average_gcse_capped_point_scores_2014) %>%
+  as.vector()%>%
+  localG(., Lward.lw)
+
+points_sf_joined <- points_sf_joined %>%
+  dplyr::arrange(gss_code)%>%
+  dplyr::mutate(GCSE_LocGiz = as.numeric(G_LWard_Local_GCSE))
+
+# 绘制交互地图
+tm_shape(points_sf_joined) +
+    tm_polygons("GCSE_LocGiz",
+        style="fixed",
+        breaks=breaks1,
+        palette=GIColours,
+        midpoint=NA,
+        title="Gi*, GCSE Scores")
+
+```
+

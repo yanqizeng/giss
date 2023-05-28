@@ -1,0 +1,133 @@
+---
+title: "Homework_04"
+output: html_document
+date: "2022-11-01"
+---
+
+```{r}
+library(sf)
+library(tmap)
+library(here)
+library(dplyr)
+library(janitor)
+library(tidyverse)
+library(classInt)
+library(countrycode)
+library(geojsonio)
+library(ggplot2)
+library(maptools)
+library(pacman)
+library(OpenStreetMap)
+library(plotly)
+library(RColorBrewer)
+library(RSQLite)
+library(rgeos)
+library(rgdal)
+library(sp)
+library(shiny)
+library(shinyjs)
+library(tmaptools)
+
+```
+
+
+# Read in the gender inequality data
+```{r}
+GenderIne<- read.csv(here::here("prac4_Data","HDR21-22_Composite_indices_complete_time_series.csv")) %>%
+  clean_names()
+```
+
+# Reand in world countries shapfile
+```{r}
+WorldData <- st_read(here("prac4_Data","World_Countries_(Generalized).geojson"))
+```
+
+# Select necessary data
+```{r}
+GIgii <- GenderIne %>% 
+  dplyr::select(c(iso3,country,gii_2010,gii_2019))
+
+GIgii
+
+```
+
+# Make a new colum 
+```{r}
+GIgii1019 <- GIgii %>%
+  mutate(diff=gii_2019-gii_2010)
+
+GIgii1019
+```
+
+# Join GIgii1019 to WorldData
+```{r}
+WorldData02 <- WorldData %>%
+  clean_names() %>%
+  left_join(.,
+            GIgii1019,
+            by = c("country" = "country"))
+
+WorldData02
+```
+
+# Map
+```{r}
+tmap_mode("plot")
+
+tm_shape(WorldData02)+
+tm_polygons("diff", 
+              style="jenks",
+              palette="Blues",
+              midpoint=NA,
+              title="Change in index",
+              alpha = 0.5) + 
+  tm_compass(position = c("left", "bottom"),type = "arrow") + 
+  tm_scale_bar(position = c("left", "bottom")) +
+  tm_layout(title = "Difference in gender inequality between 2010 and 2019", legend.position = c("right", "bottom"))
+```
+# Inset map
+```{r}
+WorldMap <- st_bbox(WorldData02,
+                    crs = st_crs(WorldData02))%>%
+
+  st_as_sfc()
+
+
+
+```
+
+```{r}
+
+main <- tm_shape(WorldData02, bbbox = WorldMap) + 
+  tm_polygons("Change in index",
+              breaks = c(-0.4, -0.2, -0.1, 0, 1) , 
+              palette="Blues")+
+  tm_scale_bar(position = c("left", "bottom"), text.size = .75)+
+  tm_layout(legend.position = c("right","top"), 
+            legend.text.size=.75, 
+            legend.title.size = 1.1,
+            frame=FALSE)+
+  tm_credits("Difference in gender inequality between 2010 and 2019", position=c(0.0,0.0))+
+
+  tm_compass(type = "8star", position = c(0.06, 0.1)) +
+
+  #bottom left top right
+  tm_layout(inner.margin=c(0.02,0.02,0.02,0.2))
+
+```
+
+```{r}
+
+inset = tm_shape(WorldMap) + 
+    tm_layout(frame=FALSE,
+            bg.color = "transparent")
+
+```
+
+```{r}
+
+library(grid)
+main
+print(inset, vp = viewport(0.86, 0.29, width = 0.5, height = 0.55))
+```
+
